@@ -1,0 +1,164 @@
+import streamlit as st
+import pandas as pd
+import datetime
+import os
+import altair as alt
+
+# --- CONFIGURATION ---
+FILE_NAME = 'uv_data.csv'
+TARGET = 3.0
+TOLERANCE = 0.2
+USL = TARGET + TOLERANCE  # 3.2
+LSL = TARGET - TOLERANCE  # 2.8
+
+st.set_page_config(page_title="UV Data Collection", page_icon="🟠", layout="centered")
+
+# --- CUSTOM CSS FOR BLACK & ORANGE THEME ---
+st.markdown("""
+    <style>
+    /* Main Background */
+    .stApp {
+        background-color: #000000;
+        color: #FFFFFF;
+    }
+    /* Input Fields Background */
+    .stTextInput > div > div > input, 
+    .stNumberInput > div > div > input, 
+    .stSelectbox > div > div > div {
+        background-color: #1E1E1E; 
+        color: #FFFFFF;
+        border: 1px solid #FF8C00; /* Orange Border */
+    }
+    /* Buttons */
+    .stButton > button {
+        background-color: #FF8C00; /* Orange */
+        color: black;
+        font-weight: bold;
+        border-radius: 5px;
+        border: none;
+    }
+    .stButton > button:hover {
+        background-color: #FFAA33;
+        color: black;
+    }
+    /* Headings and Text */
+    h1, h2, h3, h4, p, label {
+        color: #FFFFFF !important;
+    }
+    /* Calendar/Date Picker text fix */
+    input[type="date"] {
+        color-scheme: dark;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- HEADER & LOGO ---
+col1, col2 = st.columns([1, 3])
+with col1:
+    # Using a placeholder URL. Replace this string with a local path like "logo.png" if you have one.
+    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/c/ca/Samtec_logo.svg/1200px-Samtec_logo.svg.png", width=150)
+with col2:
+    st.title("UV Intensity Tracker")
+    st.markdown("### Daily Process Control")
+
+st.divider()
+
+# --- INPUT SECTION ---
+with st.container():
+    st.subheader("📝 New Entry")
+    
+    # 1. Date Picker
+    date_input = st.date_input("Date", datetime.date.today())
+    
+    # 2. Station Selection
+    station = st.selectbox(
+        "Station ID", 
+        ["OPFA-11", "OPFA-12", "OPFA-13", "OPFA-14"]
+    )
+    
+    # 3. SGN Number
+    sgn_number = st.text_input("Operator SGN", placeholder="e.g., SGN12345")
+    
+    # 4. UV Intensity Input (The core data)
+    uv_value = st.number_input(
+        "UV Intensity (w/cm²)", 
+        min_value=0.0, 
+        max_value=10.0, 
+        value=3.0, 
+        step=0.01,
+        format="%.2f"
+    )
+
+    # Validation Logic
+    is_passing = LSL <= uv_value <= USL
+    
+    if st.button("Submit Data"):
+        if not sgn_number:
+            st.error("⚠️ Please enter your SGN number.")
+        else:
+            # Create a new record
+            new_data = {
+                "Date": str(date_input),
+                "Station": station,
+                "SGN": sgn_number,
+                "UV_Intensity": uv_value,
+                "Result": "PASS" if is_passing else "FAIL",
+                "Timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            
+            # Save to CSV
+            df_new = pd.DataFrame([new_data])
+            if not os.path.isfile(FILE_NAME):
+                df_new.to_csv(FILE_NAME, index=False)
+            else:
+                df_new.to_csv(FILE_NAME, mode='a', header=False, index=False)
+            
+            # Success Message
+            if is_passing:
+                st.success(f"✅ Data Saved! UV Value {uv_value} is WITHIN SPEC.")
+            else:
+                st.error(f"❌ Data Saved, but {uv_value} is OUT OF SPEC ({LSL} - {USL}). Alert Engineering!")
+
+# --- SPC / DATA VIEW SECTION ---
+st.divider()
+st.subheader("📊 Process Control (SPC)")
+
+if os.path.isfile(FILE_NAME):
+    df = pd.read_csv(FILE_NAME)
+    
+    # Show Summary Metrics
+    avg_uv = df['UV_Intensity'].mean()
+    last_uv = df['UV_Intensity'].iloc[-1]
+    
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Target Spec", f"{TARGET} w/cm²")
+    m2.metric("Last Reading", f"{last_uv} w/cm²", delta=round(last_uv - TARGET, 2))
+    m3.metric("Average Reading", f"{round(avg_uv, 2)} w/cm²")
+
+    # --- SPC CHART ---
+    # We use Altair for a custom chart with limit lines
+    base = alt.Chart(df).encode(x='Date', y=alt.Y('UV_Intensity', scale=alt.Scale(domain=[2.0, 4.0])))
+    
+    # The Line of actual data
+    line = base.mark_line(point=True, color='#FF8C00').encode(tooltip=['Date', 'Station', 'SGN', 'UV_Intensity'])
+    
+    # Spec Limits (Red Lines)
+    upper_rule = alt.Chart(pd.DataFrame({'y': [USL]})).mark_rule(color='red', strokeDash=[5,5]).encode(y='y')
+    lower_rule = alt.Chart(pd.DataFrame({'y': [LSL]})).mark_rule(color='red', strokeDash=[5,5]).encode(y='y')
+    target_rule = alt.Chart(pd.DataFrame({'y': [TARGET]})).mark_rule(color='green', opacity=0.5).encode(y='y')
+
+    st.altair_chart(line + upper_rule + lower_rule + target_rule, use_container_width=True)
+
+    # --- EXCEL DOWNLOAD ---
+    st.subheader("📋 Data Log")
+    st.dataframe(df.sort_index(ascending=False), use_container_width=True)
+    
+    with open(FILE_NAME, "rb") as file:
+        st.download_button(
+            label="Download Excel/CSV",
+            data=file,
+            file_name="uv_intensity_data.csv",
+            mime="text/csv"
+        )
+else:
+    st.info("No data collected yet. Submit the first entry above!")
